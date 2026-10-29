@@ -43,3 +43,11 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Additional Dart caches and local configuration.
+.flutter-plugins
+.packages
+.pub-preload-cache/
+.env
+.env.*
+!.env.example
