@@ -56,9 +56,13 @@ class _AuthGateState extends State<AuthGate> {
         // Auth events rebuild gate; current session selects screen.
         final session = supabase.auth.currentSession;
 
+        // Separate dashboard state for each authenticated user.
         return session == null
             ? const AuthScreen()
-            : DashboardScreen(user: session.user);
+            : DashboardScreen(
+                key: ValueKey(session.user.id),
+                user: session.user,
+              );
       },
     );
   }
@@ -327,6 +331,57 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   bool _signingOut = false;
 
+  late Future<Map<String, dynamic>> _profile;
+
+  @override
+  void initState() {
+    super.initState();
+
+    // Start profile request once when dashboard state is created.
+    _profile = _loadOrCreateProfile();
+  }
+
+  Future<Map<String, dynamic>> _loadOrCreateProfile() async {
+    final userId = widget.user.id;
+
+    // Search profile using authenticated user's ID.
+    final existing = await supabase
+        .from('profiles')
+        .select('id, display_name, created_at')
+        .eq('id', userId)
+        .maybeSingle();
+
+    if (existing != null) return existing;
+
+    // Use registration metadata only when database profile is missing.
+    final rawName = widget.user.userMetadata?['display_name'];
+    final name = rawName is String ? rawName.trim() : '';
+    final displayName = name.isEmpty ? 'Student' : name;
+    final safeName = String.fromCharCodes(displayName.runes.take(100));
+
+    // Preserve existing row if another tab creates same profile first.
+    await supabase
+        .from('profiles')
+        .upsert(
+          {'id': userId, 'display_name': safeName},
+          onConflict: 'id',
+          ignoreDuplicates: true,
+        );
+
+    return await supabase
+        .from('profiles')
+        .select('id, display_name, created_at')
+        .eq('id', userId)
+        .single();
+  }
+
+  void _retryProfile() {
+    // Start new request only when user explicitly retries.
+    setState(() {
+      _profile = _loadOrCreateProfile();
+    });
+  }
+
   Future<void> _signOut() async {
     // Block repeated sign-out calls until current request finishes.
     setState(() => _signingOut = true);
@@ -346,12 +401,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Read registration name from metadata, with fallback for missing value.
-    final name = widget.user.userMetadata?['display_name'] as String?;
-    final greeting = name == null || name.trim().isEmpty
-        ? 'student'
-        : name.trim();
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Your household'),
@@ -370,9 +419,51 @@ class _DashboardScreenState extends State<DashboardScreen> {
           child: ListView(
             padding: const EdgeInsets.all(24),
             children: [
-              Text(
-                'Hello, $greeting!',
-                style: Theme.of(context).textTheme.headlineMedium,
+              // Render loading, failure or database profile result.
+              FutureBuilder<Map<String, dynamic>>(
+                future: _profile,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState != ConnectionState.done) {
+                    return const Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Loading your profile...'),
+                        SizedBox(height: 8),
+                        LinearProgressIndicator(),
+                      ],
+                    );
+                  }
+
+                  if (snapshot.hasError) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Could not load or save your profile. '
+                          'Check connection and try again.',
+                        ),
+                        TextButton(
+                          onPressed: _retryProfile,
+                          child: const Text('Retry profile'),
+                        ),
+                      ],
+                    );
+                  }
+
+                  // Read name only after request completed successfully.
+                  final name = snapshot.data!['display_name'] as String;
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Hello, $name!',
+                        style: Theme.of(context).textTheme.headlineMedium,
+                      ),
+                      const Text('Profile loaded from database'),
+                    ],
+                  );
+                },
               ),
               const SizedBox(height: 8),
               const Text('Plan together. Shop smarter. Waste less.'),
